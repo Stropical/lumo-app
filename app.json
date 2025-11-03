@@ -9,7 +9,20 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.anonymous.lumoapp",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "This app uses Bluetooth to connect to devices.",
+        "NSBluetoothPeripheralUsageDescription": "Bluetooth access is required to scan and connect to devices.",
+        "NSLocationWhenInUseUsageDescription": "This app needs location access to show your position on the map and verify you're within the service area.",
+        "NSLocationAlwaysUsageDescription": "This app needs location access to track your rides and enforce geofence boundaries.",
+        "NSCameraUsageDescription": "This app needs camera access to take a photo of the bike when ending a ride.",
+        "NSPhotoLibraryUsageDescription": "This app needs photo library access to save bike photos.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "config": {
+        "googleMapsApiKey": "YOUR_IOS_GOOGLE_MAPS_API_KEY"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +32,24 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.lumoapp",
+      "permissions": [
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_CONNECT",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ],
+      "config": {
+        "googleMaps": {
+          "apiKey": "YOUR_ANDROID_GOOGLE_MAPS_API_KEY"
+        }
+      }
     },
     "web": {
       "output": "static",
@@ -27,6 +57,19 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "This app needs location access to show your position on the map and verify you're within the service area."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "The app needs access to your photos to save bike images.",
+          "cameraPermission": "The app needs camera access to take photos of bikes when ending rides."
+        }
+      ],
       [
         "expo-splash-screen",
         {
@@ -43,6 +86,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "1ecc5f11-579c-4099-9dda-115105387604"
+      }
     }
   }
 }
