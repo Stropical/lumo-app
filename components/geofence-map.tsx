@@ -279,6 +279,7 @@ const styles = StyleSheet.create({
     top: 16,
     right: 16,
     gap: 8,
+        marginTop: 40,
   },
   controlButton: {
     backgroundColor: '#ffffff',
@@ -295,6 +296,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#0f172a',
+    
   },
   legend: {
     position: 'absolute',
@@ -349,6 +351,7 @@ const styles = StyleSheet.create({
   },
   statusBar: {
     position: 'absolute',
+    marginTop: 40,
     top: 16,
     left: 16,
     backgroundColor: '#ffffff',

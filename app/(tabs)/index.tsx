@@ -1,10 +1,11 @@
 import React, {useEffect, useRef, useState} from 'react';
-import {SafeAreaView, Text, View, TouchableOpacity, FlatList, Platform, PermissionsAndroid, StyleSheet, Alert, Modal, Animated, LayoutAnimation, UIManager, StatusBar, Image} from 'react-native';
+import {SafeAreaView, Text, View, TouchableOpacity, FlatList, Platform, PermissionsAndroid, StyleSheet, Alert, Modal, Animated, Easing, LayoutAnimation, UIManager, StatusBar, ActivityIndicator} from 'react-native';
 import {BleManager, Device, State} from 'react-native-ble-plx';
 import {Buffer} from 'buffer';
 import GeofenceMap from '@/components/geofence-map';
 import { useNavigation } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import { LinearGradient } from 'expo-linear-gradient';
 
 // Enable LayoutAnimation on Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -14,6 +15,12 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 // Match these to the firmware UUIDs
 const SERVICE_UUID = '12345678-1234-1234-1234-1234567890ab'.toLowerCase();
 const CHAR_UUID = 'abcdefab-1234-1234-1234-abcdefabcdef'.toLowerCase();
+
+const PRIMARY_FONT = Platform.select({
+  ios: 'Helvetica Neue',
+  android: 'Roboto',
+  default: 'System',
+});
 
 type BikeState = 'INACTIVE' | 'ACTIVATED' | 'RIDING';
 
@@ -50,11 +57,18 @@ function HomeScreen() {
   const [isDevMode, setIsDevMode] = useState(false); // Track if connected to dev bike
   const [distance, setDistance] = useState(0); // Distance in miles
   const [batteryLevel, setBatteryLevel] = useState(85); // Battery percentage
-  const [showCameraModal, setShowCameraModal] = useState(false);
-  const [bikePhoto, setBikePhoto] = useState<string | null>(null);
+  const [, setBikePhoto] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false); // Loading indicator between screens
+  const [showRideSummary, setShowRideSummary] = useState(false);
+  const [rideSummaryData, setRideSummaryData] = useState<{duration: number; distance: number; cost: number} | null>(null);
+  const [turboActive, setTurboActive] = useState(false);
+  const [turboPurchased, setTurboPurchased] = useState(false);
+  const [showTurboNotification, setShowTurboNotification] = useState(false);
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(0)).current;
+  const turboStatusAnim = useRef(new Animated.Value(0)).current;
+  const turboNotificationAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     managerRef.current = new BleManager();
@@ -119,6 +133,23 @@ function HomeScreen() {
     }).start();
   }, [connectedDevice, bikeState]);
 
+  useEffect(() => {
+    Animated.timing(turboStatusAnim, {
+      toValue: turboActive ? 1 : 0,
+      duration: 600,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [turboActive, turboStatusAnim]);
+
+  useEffect(() => {
+    if (!turboActive) {
+      turboNotificationAnim.stopAnimation();
+      turboNotificationAnim.setValue(0);
+      setShowTurboNotification(false);
+    }
+  }, [turboActive, turboNotificationAnim]);
+
   // Ride timer and stats simulator
   useEffect(() => {
     let interval: any;
@@ -126,7 +157,11 @@ function HomeScreen() {
       interval = setInterval(() => {
         setRideTime(prev => {
           const newTime = prev + 1;
-          setRideCost(1.00 + (newTime / 60) * 0.15);
+          const unlockCost = 1.0;
+          const perMinuteRate = 0.15;
+          const turboCost = turboPurchased ? 1.0 : 0;
+
+          setRideCost(unlockCost + (newTime / 60) * perMinuteRate + turboCost);
           
           // Simulate distance (roughly 10 mph average = 0.00278 miles per second)
           setDistance(prevDist => prevDist + 0.00278);
@@ -141,8 +176,21 @@ function HomeScreen() {
       setRideTime(0);
       setRideCost(0);
       setDistance(0);
+      setTurboActive(false);
+      setTurboPurchased(false);
     }
     return () => clearInterval(interval);
+  }, [bikeState, turboPurchased]);
+
+  // Reset summary data and Turbo state whenever a fresh ride kicks off.
+  // This runs only when the bike state itself changes into RIDING so
+  // manually activating Turbo mid-ride is unaffected.
+  useEffect(() => {
+    if (bikeState === 'RIDING') {
+      setRideSummaryData(null);
+      setTurboActive(false);
+      setTurboPurchased(false);
+    }
   }, [bikeState]);
 
   async function requestPermissions() {
@@ -206,29 +254,63 @@ function HomeScreen() {
   }
 
   async function connect(device: Device) {
+    setIsLoading(true);
+    
     // Check if this is the dev bike
     if (device.id === DEV_BIKE_DEVICE.id) {
-      setConnectionState('connecting');
-      // Simulate connection delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      setConnectedDevice(device);
-      setConnectionState('connected');
-      setIsDevMode(true);
-      console.log('Connected to Dev Bike (simulator mode)');
-      
-      // Auto-start ride after connection
-      setTimeout(async () => {
-        await sendCommand('A'); // Activate
-        await new Promise(resolve => setTimeout(resolve, 500));
-        await sendCommand('S'); // Start riding
-      }, 500);
-      
-      return;
+      try {
+        setConnectionState('connecting');
+        // Simulate connection delay
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        setConnectedDevice(device);
+        setConnectionState('connected');
+        setIsDevMode(true);
+        console.log('Connected to Dev Bike (simulator mode)');
+        
+        // Auto-start ride after connection
+        setTimeout(async () => {
+          try {
+            await sendCommand('A'); // Activate
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await sendCommand('S'); // Start riding
+          } catch (e) {
+            console.warn('Dev bike auto-start error', e);
+            Alert.alert(
+              'Error',
+              'Failed to start ride. Please try again.',
+              [{ text: 'OK' }]
+            );
+          } finally {
+            setIsLoading(false);
+          }
+        }, 500);
+        
+        return;
+      } catch (e) {
+        console.warn('Dev bike connection error', e);
+        setConnectionState('disconnected');
+        setConnectedDevice(null);
+        setIsLoading(false);
+        Alert.alert(
+          'Connection Failed',
+          'Failed to connect to Dev Bike. Please try again.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
     }
 
     // Regular BLE connection for real devices
     const manager = managerRef.current;
-    if (!manager) return;
+    if (!manager) {
+      setIsLoading(false);
+      Alert.alert(
+        'Bluetooth Error',
+        'Bluetooth manager is not initialized. Please restart the app.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
 
     setConnectionState('connecting');
     setIsDevMode(false);
@@ -250,6 +332,8 @@ function HomeScreen() {
           await sendCommand('S'); // Start riding
         } catch (e) {
           console.warn('Auto-start error', e);
+        } finally {
+          setIsLoading(false);
         }
       }, 500);
 
@@ -300,14 +384,18 @@ function HomeScreen() {
       console.warn('Connect error', e);
       setConnectionState('disconnected');
       setConnectedDevice(null);
+      setIsLoading(false);
+      
+      // Show error alert to user
+      Alert.alert(
+        'Connection Failed',
+        'Unable to connect to the bike. Please make sure the bike is powered on and try again.',
+        [{ text: 'OK' }]
+      );
     }
   }
 
   async function sendCommand(command: string) {
-    if (!connectedDevice || connectionState !== 'connected') {
-      throw new Error('Not connected');
-    }
-
     // Dev bike mode - just simulate the command
     if (isDevMode) {
       console.log('Dev Bike - Simulating command:', command);
@@ -322,6 +410,11 @@ function HomeScreen() {
         case 'D': setBikeState('INACTIVE'); break;
       }
       return;
+    }
+
+    // Real BLE - require connection
+    if (!connectedDevice || connectionState !== 'connected') {
+      throw new Error('Not connected');
     }
 
     // Real BLE command
@@ -408,42 +501,159 @@ function HomeScreen() {
 
       if (!result.canceled && result.assets[0]) {
         setBikePhoto(result.assets[0].uri);
-        setShowCameraModal(false);
-        // Now complete the ride
+        // Photo captured successfully - complete the ride
         await completeRideEnd();
+      } else {
+        // User canceled - ask if they still want to end ride
+        Alert.alert(
+          'Photo Required',
+          'A photo of the bike is required to end your ride. Please take a photo or continue riding.',
+          [
+            { text: 'Take Photo', onPress: () => takeBikePhoto() },
+            { text: 'Continue Riding', style: 'cancel' }
+          ]
+        );
       }
-    } catch (e) {
-      console.warn('Camera error', e);
-      Alert.alert('Error', 'Failed to take photo. Please try again.');
+    } catch (e: any) {
+      console.error('Camera error:', e);
+      console.error('Error details:', e.message, e.stack);
+      Alert.alert(
+        'Camera Error',
+        `Failed to open camera: ${e.message || 'Unknown error'}. Make sure you've run "npx expo prebuild" and are testing on a device (not Expo Go).`,
+        [{ text: 'OK' }]
+      );
     }
   };
 
   const completeRideEnd = async () => {
     setIsProcessing(true);
+    setIsLoading(true);
     
     try {
+      // Send stop commands (works for both dev and real bikes)
       await sendCommand('T');
       await new Promise(resolve => setTimeout(resolve, 500));
       await sendCommand('D');
+      
+      // Small delay for smooth transition
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
       setShowRideDetails(false);
+      setRideSummaryData({
+        duration: rideTime,
+        distance,
+        cost: rideCost,
+      });
+      turboNotificationAnim.stopAnimation();
+      turboNotificationAnim.setValue(0);
+      setShowTurboNotification(false);
       
       // Disconnect and reset
       setConnectedDevice(null);
       setConnectionState('disconnected');
       setIsDevMode(false);
+      setBikeState('INACTIVE');
       setBatteryLevel(85); // Reset battery for next ride
       setBikePhoto(null); // Clear photo for next ride
+      setTurboActive(false); // Deactivate turbo for next session
+      setTurboPurchased(false);
+
+      // Show ride summary modal
+      setShowRideSummary(true);
     } catch (e) {
       console.warn('End ride error', e);
+      Alert.alert('Error', 'Failed to end ride. Please try again.');
     } finally {
       setIsProcessing(false);
+      setIsLoading(false);
     }
   };
 
   const handleEndRide = async () => {
     if (isProcessing) return;
-    // Show camera modal to take photo before ending
-    setShowCameraModal(true);
+    
+    // In dev mode, offer option to skip camera for testing
+    if (isDevMode) {
+      Alert.alert(
+        'End Ride',
+        'Take a photo of the bike to complete your ride',
+        [
+          { text: 'Take Photo', onPress: () => takeBikePhoto() },
+          { text: 'Skip (Dev Mode)', onPress: () => completeRideEnd(), style: 'cancel' }
+        ]
+      );
+    } else {
+      await takeBikePhoto();
+    }
+  };
+
+  const batteryColor = batteryLevel > 50 ? '#22c55e' : batteryLevel > 20 ? '#f97316' : '#ef4444';
+  const batteryStatusText = batteryLevel > 50 ? 'Range looks good' : batteryLevel > 20 ? 'Plan to dock soon' : 'Charge immediately';
+  const turboGlowOpacity = turboStatusAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.35],
+  });
+  const summaryDuration = rideSummaryData?.duration ?? rideTime;
+  const summaryDistance = rideSummaryData?.distance ?? distance;
+  const summaryCost = rideSummaryData?.cost ?? rideCost;
+
+  const submitProblemReport = (reason: string) => {
+    console.log('Problem reported:', reason);
+    Alert.alert('Thanks for the feedback', 'Our team has been notified and will look into this.', [{text: 'Close'}]);
+  };
+
+  const triggerTurboNotification = () => {
+    turboNotificationAnim.stopAnimation();
+    setShowTurboNotification(true);
+    turboNotificationAnim.setValue(0);
+    Animated.sequence([
+      Animated.spring(turboNotificationAnim, {
+        toValue: 1,
+        friction: 6,
+        tension: 120,
+        useNativeDriver: true,
+      }),
+      Animated.delay(1600),
+      Animated.timing(turboNotificationAnim, {
+        toValue: 0,
+        duration: 240,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start(() => setShowTurboNotification(false));
+  };
+
+  const handleReportProblem = () => {
+    Alert.alert(
+      'Report a problem',
+      'Select the issue you encountered',
+      [
+        { text: 'Bike malfunction', onPress: () => submitProblemReport('Bike malfunction') },
+        { text: 'Parking issue', onPress: () => submitProblemReport('Parking issue') },
+        { text: 'Other', onPress: () => submitProblemReport('Other') },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+      { cancelable: true }
+    );
+  };
+
+  const handleBuyTurbo = () => {
+    // Prevent re-activating if already active
+    if (turboActive) return;
+
+    // Add $1 turbo fee to the ride cost
+    setRideCost(prev => prev + 1.00);
+    setTurboPurchased(true);
+
+    // Activate turbo in-place without leaving the ride
+    setTurboActive(true);
+    // Don't change the bike state if the user is currently riding.
+    // Previously this forced the bike state to 'ACTIVATED' which caused the
+    // component to re-render the non-riding UI and send users back to home.
+    if (bikeState !== 'RIDING') {
+      setBikeState('ACTIVATED');
+    }
+    triggerTurboNotification();
   };
 
   // Full-screen riding mode
@@ -455,70 +665,164 @@ function HomeScreen() {
           {/* Full screen map */}
           <View style={styles.fullScreenMapContainer}>
             <GeofenceMap onLocationUpdate={() => {}} showUserLocation={true} />
-            {/* Primary color overlay - solid background */}
-            <View style={styles.mapOverlay} />
+            {/* Gradient overlay - 100% opacity; blue or orange based on turbo */}
+            <LinearGradient
+              colors={turboActive ? ['#ea580c', '#f97316', '#fb923c'] : ['#1e40af', '#2563eb', '#3b82f6']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.mapOverlay}
+            />
           </View>
 
           {/* Ride info overlay */}
           <View style={styles.fullScreenOverlay}>
-          <View style={styles.fullScreenHeader}>
-            <View style={styles.fullScreenBadge}>
-              <View style={styles.fullScreenDot} />
-              <Text style={styles.fullScreenBadgeText}>
-                {getDeviceLabel(connectedDevice!)}
-                {isDevMode && ' 🧪'}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.fullScreenStats}>
-            {/* Row 1: Time and Cost */}
-            <View style={styles.statsRow}>
-              <View style={[styles.fullScreenStatCard, styles.statCardSmall]}>
-                <Text style={styles.fullScreenStatLabel}>Time</Text>
-                <Text style={styles.fullScreenStatValue}>{formatTime(rideTime)}</Text>
+            <View style={styles.rideHeader}>
+              <View>
+                <Text style={styles.rideStatusLabel}>ACTIVE RIDE</Text>
+                <Text style={styles.rideDeviceName}>
+                  {getDeviceLabel(connectedDevice!)}
+                  {isDevMode && ' · DEV MODE'}
+                </Text>
               </View>
-              <View style={[styles.fullScreenStatCard, styles.statCardSmall]}>
-                <Text style={styles.fullScreenStatLabel}>Cost</Text>
-                <Text style={styles.fullScreenStatValue}>${rideCost.toFixed(2)}</Text>
+              <View style={styles.rideIndicator}>
+                <View style={styles.rideIndicatorDot} />
+                <Text style={styles.rideIndicatorText}>
+                  {connectionState === 'connected' ? 'Connected' : 'Connecting'}
+                </Text>
               </View>
             </View>
 
-            {/* Row 2: Distance and Battery */}
-            <View style={styles.statsRow}>
-              <View style={[styles.fullScreenStatCard, styles.statCardSmall]}>
-                <Text style={styles.fullScreenStatLabel}>Distance</Text>
-                <Text style={styles.fullScreenStatValue}>{distance.toFixed(2)} mi</Text>
+            <View style={styles.fullScreenStats}>
+              <View style={styles.metricHighlight}>
+                <Text style={styles.metricHighlightLabel}>Duration</Text>
+                <Text style={styles.metricHighlightValue}>{formatTime(rideTime)}</Text>
+                <Text style={styles.metricHighlightMeta}>Timer runs while the bike is moving</Text>
               </View>
-              <View style={[styles.fullScreenStatCard, styles.statCardSmall]}>
-                <Text style={styles.fullScreenStatLabel}>Battery</Text>
-                <View style={styles.batteryContainer}>
-                  <Text style={[styles.fullScreenStatValue, {color: batteryLevel > 20 ? '#22c55e' : '#ef4444'}]}>
-                    {Math.round(batteryLevel)}%
-                  </Text>
-                  <View style={styles.batteryBar}>
-                    <View style={[styles.batteryFill, {
-                      width: `${batteryLevel}%`,
-                      backgroundColor: batteryLevel > 20 ? '#22c55e' : '#ef4444'
-                    }]} />
-                  </View>
+
+              <View style={styles.metricRow}>
+                <View style={styles.metricCard}>
+                  <Text style={styles.metricLabel}>Cost</Text>
+                  <Text style={styles.metricValue}>${rideCost.toFixed(2)}</Text>
+                  <Text style={styles.metricMeta}>Charged after ride</Text>
+                </View>
+                <View style={styles.metricCard}>
+                  <Text style={styles.metricLabel}>Distance</Text>
+                  <Text style={styles.metricValue}>{distance.toFixed(2)}</Text>
+                  <Text style={styles.metricMeta}>miles travelled</Text>
                 </View>
               </View>
-            </View>
-          </View>
 
-          <TouchableOpacity 
-            style={[styles.fullScreenEndButton, isProcessing && styles.buttonDisabled]}
-            onPress={handleEndRide}
+              <View style={styles.metricCardWide}>
+                <View style={styles.metricCardHeader}>
+                  <Text style={styles.metricLabel}>Battery</Text>
+                  <Text style={[styles.metricValue, styles.metricValueCompact, { color: batteryColor }]}>
+                    {Math.round(batteryLevel)}%
+                  </Text>
+                </View>
+                <View style={styles.batteryTrack}>
+                  <View style={[styles.batteryTrackFill, { width: `${batteryLevel}%`, backgroundColor: batteryColor }]} />
+                </View>
+                <Text style={styles.metricMeta}>{batteryStatusText}</Text>
+              </View>
+            </View>
+
+          {showTurboNotification && (
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.turboNotification,
+                {
+                  opacity: turboNotificationAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0, 1],
+                  }),
+                  transform: [
+                    {
+                      translateY: turboNotificationAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [12, 0],
+                      }),
+                    },
+                    {
+                      scale: turboNotificationAnim.interpolate({
+                        inputRange: [0, 0.75, 1],
+                        outputRange: [0.6, 1.05, 1],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            >
+              <View style={styles.turboNotificationGlow} />
+              <View style={styles.turboNotificationBadge}>
+                <Text style={styles.turboNotificationBadgeText}>⚡️</Text>
+              </View>
+              <View>
+                <Text style={styles.turboNotificationTitle}>Turbo engaged</Text>
+                <Text style={styles.turboNotificationSubtitle}>Hold tight for extra power</Text>
+              </View>
+            </Animated.View>
+          )}
+
+          <TouchableOpacity
+            style={[styles.turboButton, turboActive && styles.turboButtonActive]}
+            onPress={handleBuyTurbo}
             activeOpacity={0.9}
-            disabled={isProcessing}
+            disabled={turboActive}
           >
-            <Text style={styles.fullScreenEndButtonText}>
-              {isProcessing ? 'ENDING...' : 'END RIDE'}
-            </Text>
-            <Text style={styles.fullScreenEndButtonSubtext}>Tap to finish and lock bike</Text>
+            <LinearGradient
+              colors={turboActive ? ['#ea580c', '#f97316', '#fb923c'] : ['#1e40af', '#2563eb', '#3b82f6']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={[
+                styles.turboButtonContent,
+                {
+                  shadowColor: turboActive ? '#fb923c' : '#2563eb',
+                  borderColor: turboActive ? 'rgba(255,255,255,0.12)' : 'rgba(59, 130, 246, 0.25)',
+                },
+              ]}
+            >
+              <Animated.View
+                pointerEvents="none"
+                style={[
+                  styles.turboButtonGlow,
+                  {
+                    opacity: turboGlowOpacity,
+                  },
+                ]}
+              />
+              <View style={styles.turboIconWrapper}>
+                <Text style={styles.turboIcon}>🔥</Text>
+              </View>
+              <View style={styles.turboTextBlock}>
+                <Text style={styles.turboTitle}>{turboActive ? 'TURBO ACTIVATED' : 'Buy Turbo Mode'}</Text>
+                <Text style={styles.turboSubtitle}>{turboActive ? 'Activated for this ride' : '$1 instant boost for this ride'}</Text>
+              </View>
+            </LinearGradient>
           </TouchableOpacity>
-        </View>
+
+            <TouchableOpacity 
+              style={[styles.endRideButton, isProcessing && styles.buttonDisabled]}
+              onPress={handleEndRide}
+              activeOpacity={0.85}
+              disabled={isProcessing}
+            >
+              <Text style={styles.endRideButtonText}>
+                {isProcessing ? 'ENDING RIDE' : 'END RIDE'}
+              </Text>
+              <Text style={styles.endRideButtonSubtext}>
+                {isProcessing ? 'Finishing up...' : 'Lock bike and finish session'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.reportButton}
+              onPress={handleReportProblem}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.reportButtonText}>Report a problem</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </>
     );
@@ -533,33 +837,26 @@ function HomeScreen() {
         <GeofenceMap onLocationUpdate={() => {}} showUserLocation={true} />
       </View>
 
-      {/* Floating header overlay */}
-      <View style={styles.floatingHeader}>
-        <TouchableOpacity 
-          style={styles.scanButtonFloating}
-          onPress={startScan}
-          disabled={isScanning}
-        >
-          <Text style={styles.scanButtonText}>
-            {isScanning ? '🔍' : '📡'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
       {/* Floating START RIDE button */}
       <View style={styles.floatingButtonContainer}>
-        <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+  <Animated.View style={{ transform: [{ scale: scaleAnim }], width: '100%' }}>
           <TouchableOpacity 
-            style={styles.startRideButtonFloating}
             onPress={handleStartRide}
             activeOpacity={0.9}
           >
-            <Text style={styles.startRideButtonText}>
-              START RIDE
-            </Text>
-            <Text style={styles.startRideButtonSubtext}>
-              Select a bike to begin
-            </Text>
+            <LinearGradient
+              colors={['#1e40af', '#2563eb', '#3b82f6']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.startRideButtonFloating}
+            >
+              <Text style={styles.startRideButtonText}>
+                START RIDE
+              </Text>
+              <Text style={styles.startRideButtonSubtext}>
+                Select a bike to begin
+              </Text>
+            </LinearGradient>
           </TouchableOpacity>
         </Animated.View>
         
@@ -588,16 +885,11 @@ function HomeScreen() {
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity 
-              style={styles.modalScanButton} 
-              onPress={() => {
-                startScan();
-              }}
-            >
-              <Text style={styles.modalScanButtonText}>
-                {isScanning ? '🔍 Scanning...' : '🔍 Scan for Bikes'}
-              </Text>
-            </TouchableOpacity>
+            {isScanning && (
+              <View style={styles.modalScanIndicator}>
+                <Text style={styles.modalScanIndicatorText}>🔍 Scanning for bikes...</Text>
+              </View>
+            )}
 
             <FlatList
               data={deviceArray}
@@ -645,47 +937,54 @@ function HomeScreen() {
         </View>
       </Modal>
 
-      {/* Camera Modal for End Ride */}
+      {/* Loading overlay */}
+      {isLoading && (
+        <View style={styles.loadingOverlay}>
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#2563eb" />
+            <Text style={styles.loadingText}>
+              {isProcessing ? 'Ending ride...' : 'Connecting...'}
+            </Text>
+          </View>
+        </View>
+      )}
+    
+      {/* Ride summary modal */}
       <Modal
-        visible={showCameraModal}
+        visible={showRideSummary}
         animationType="slide"
-        transparent={false}
-        onRequestClose={() => setShowCameraModal(false)}
+        transparent={true}
+        onRequestClose={() => setShowRideSummary(false)}
       >
-        <View style={styles.cameraModal}>
-          <View style={styles.cameraHeader}>
-            <Text style={styles.cameraTitle}>Take a Photo of the Bike</Text>
-            <Text style={styles.cameraSubtitle}>Show the bike parked safely in a designated area</Text>
-          </View>
-
-          <View style={styles.cameraActions}>
-            <TouchableOpacity 
-              style={styles.takePictureButton}
-              onPress={takeBikePhoto}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.takePictureIcon}>📷</Text>
-              <Text style={styles.takePictureText}>Take Picture</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              style={styles.skipPhotoButton}
-              onPress={() => {
-                setShowCameraModal(false);
-                completeRideEnd();
-              }}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.skipPhotoText}>Skip for Now</Text>
-            </TouchableOpacity>
-          </View>
-
-          {bikePhoto && (
-            <View style={styles.photoPreview}>
-              <Text style={styles.photoPreviewLabel}>Photo captured ✓</Text>
-              <Image source={{ uri: bikePhoto }} style={styles.photoImage} />
+        <View style={styles.summaryOverlay}>
+          <View style={styles.summaryCard}>
+            <Text style={styles.summaryTitle}>Ride summary</Text>
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Duration</Text>
+              <Text style={styles.summaryValue}>{formatTime(summaryDuration)}</Text>
             </View>
-          )}
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Distance</Text>
+              <Text style={styles.summaryValue}>{summaryDistance.toFixed(2)} mi</Text>
+            </View>
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Cost</Text>
+              <Text style={styles.summaryValue}>${summaryCost.toFixed(2)}</Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => setShowRideSummary(false)}
+              activeOpacity={0.8}
+            >
+              <LinearGradient
+                colors={['#1e40af', '#2563eb', '#3b82f6']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.summaryClose}
+              >
+                <Text style={styles.summaryCloseText}>Done</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
     </View>
@@ -705,117 +1004,240 @@ const styles = StyleSheet.create({
   },
   mapOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#2563eb', // Solid primary color - 100% opacity
+    // No backgroundColor - using LinearGradient component at 100% opacity
   },
   fullScreenOverlay: {
     ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(3, 7, 18, 0.45)',
     justifyContent: 'space-between',
     paddingTop: Platform.OS === 'ios' ? 60 : 40,
     paddingBottom: Platform.OS === 'ios' ? 40 : 30,
     paddingHorizontal: 20,
   },
-  fullScreenHeader: {
-    alignItems: 'center',
-  },
-  fullScreenBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 25,
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
-    shadowOffset: {width: 0, height: 4},
-    elevation: 6,
-  },
-  fullScreenDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#22c55e',
-    marginRight: 8,
-  },
-  fullScreenBadgeText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#0f172a',
-  },
   fullScreenStats: {
-    gap: 16,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  fullScreenStatCard: {
-    backgroundColor: '#ffffff',
-    padding: 24,
-    borderRadius: 20,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 15,
-    shadowOffset: {width: 0, height: 8},
-    elevation: 8,
-  },
-  statCardSmall: {
     flex: 1,
-    padding: 16,
+    gap: 20,
   },
-  fullScreenStatLabel: {
+  rideHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  rideStatusLabel: {
+    fontFamily: PRIMARY_FONT,
     fontSize: 12,
-    color: '#64748b',
+    letterSpacing: 2,
+    color: 'rgba(241, 245, 249, 0.85)',
+    textTransform: 'uppercase',
+  },
+  rideDeviceName: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 28,
     fontWeight: '600',
+    color: '#f8fafc',
+    marginTop: 6,
+  },
+  rideIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+  },
+  rideIndicatorDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#22c55e',
+  },
+  rideIndicatorText: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 13,
+    color: 'rgba(248, 250, 252, 0.92)',
+    marginLeft: 8,
+  },
+  metricHighlight: {
+    backgroundColor: 'rgba(15, 23, 42, 0.62)',
+    borderRadius: 12,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.28)',
+  },
+  metricHighlightLabel: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 12,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: 'rgba(226, 232, 240, 0.78)',
     marginBottom: 6,
+  },
+  metricHighlightValue: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 44,
+    fontWeight: '700',
+    color: '#f8fafc',
+    marginBottom: 8,
+  },
+  metricHighlightMeta: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 13,
+    color: 'rgba(226, 232, 240, 0.8)',
+  },
+  metricRow: {
+    flexDirection: 'row',
+    gap: 14,
+  },
+  metricCard: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.52)',
+    borderRadius: 12,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(76, 106, 198, 0.28)',
+  },
+  metricLabel: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 12,
     textTransform: 'uppercase',
     letterSpacing: 1,
-  },
-  fullScreenStatValue: {
-    fontSize: 32,
-    fontWeight: '900',
-    color: '#2563eb',
-  },
-  batteryContainer: {
-    width: '100%',
-    alignItems: 'center',
-  },
-  batteryBar: {
-    width: '100%',
-    height: 8,
-    backgroundColor: 'rgba(148, 163, 184, 0.3)',
-    borderRadius: 4,
-    marginTop: 8,
-    overflow: 'hidden',
-  },
-  batteryFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  fullScreenEndButton: {
-    backgroundColor: '#ffffff',
-    paddingVertical: 24,
-    paddingHorizontal: 32,
-    borderRadius: 20,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 15,
-    shadowOffset: {width: 0, height: 8},
-    elevation: 10,
-  },
-  fullScreenEndButtonText: {
-    fontSize: 28,
-    fontWeight: '900',
-    color: '#ef4444',
-    letterSpacing: 2,
+    color: 'rgba(224, 231, 255, 0.82)',
     marginBottom: 6,
   },
-  fullScreenEndButtonSubtext: {
+  metricValue: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 30,
+    fontWeight: '700',
+    color: '#f8fafc',
+  },
+  metricValueCompact: {
+    fontSize: 26,
+  },
+  metricMeta: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 12,
+    color: 'rgba(226, 232, 240, 0.75)',
+    marginTop: 8,
+  },
+  metricCardWide: {
+    backgroundColor: 'rgba(15, 23, 42, 0.52)',
+    borderRadius: 12,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(76, 106, 198, 0.28)',
+  },
+  metricCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  batteryTrack: {
+    width: '100%',
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(148, 163, 184, 0.25)',
+    overflow: 'hidden',
+  },
+  batteryTrackFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  turboButton: {
+    marginTop: 16,
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  turboButtonActive: {
+    // Slight visual tweak when active
+    opacity: 0.95,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  turboButtonContent: {
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 18,
+    paddingHorizontal: 22,
+    borderRadius: 18,
+    shadowColor: '#2563eb',
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    shadowOffset: {width: 0, height: 8},
+    elevation: 10,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    overflow: 'hidden',
+  },
+  turboButtonGlow: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  turboIconWrapper: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.28)',
+  },
+  turboIcon: {
+    fontSize: 26,
+  },
+  turboTextBlock: {
+    flex: 1,
+  },
+  turboTitle: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  turboSubtitle: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.85)',
+    marginTop: 2,
+  },
+  endRideButton: {
+    marginTop: 24,
+    backgroundColor: '#f8fafc',
+    borderRadius: 10,
+    paddingVertical: 18,
+    paddingHorizontal: 28,
+  },
+  endRideButtonText: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+    textAlign: 'center',
+  },
+  endRideButtonSubtext: {
+    fontFamily: PRIMARY_FONT,
+    fontSize: 13,
+    color: '#475569',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  reportButton: {
+    marginTop: 16,
+    alignSelf: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  reportButtonText: {
+    fontFamily: PRIMARY_FONT,
     fontSize: 14,
-    color: '#64748b',
-    fontWeight: '600',
+    color: '#cbd5f5',
+    textTransform: 'uppercase',
+    letterSpacing: 1.2,
   },
   header: {
     backgroundColor: '#ffffff',
@@ -981,32 +1403,6 @@ const styles = StyleSheet.create({
     color: '#bfdbfe',
     fontWeight: '600',
   },
-  endRideButton: {
-    backgroundColor: '#ef4444',
-    paddingVertical: 20,
-    paddingHorizontal: 32,
-    borderRadius: 20,
-    alignItems: 'center',
-    marginHorizontal: 20,
-    marginBottom: 16,
-    shadowColor: '#ef4444',
-    shadowOpacity: 0.4,
-    shadowRadius: 20,
-    shadowOffset: {width: 0, height: 10},
-    elevation: 10,
-  },
-  endRideButtonText: {
-    fontSize: 24,
-    fontWeight: '900',
-    color: '#ffffff',
-    letterSpacing: 1,
-    marginBottom: 4,
-  },
-  endRideButtonSubtext: {
-    fontSize: 14,
-    color: '#fecaca',
-    fontWeight: '600',
-  },
   quickInfo: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1084,22 +1480,18 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontWeight: '300',
   },
-  modalScanButton: {
-    backgroundColor: '#2563eb',
-    paddingVertical: 16,
+  modalScanIndicator: {
+    backgroundColor: '#f1f5f9',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     borderRadius: 12,
     alignItems: 'center',
     marginBottom: 20,
-    shadowColor: '#2563eb',
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    shadowOffset: {width: 0, height: 4},
-    elevation: 3,
   },
-  modalScanButtonText: {
-    color: '#ffffff',
-    fontSize: 16,
-    fontWeight: '700',
+  modalScanIndicatorText: {
+    color: '#64748b',
+    fontSize: 14,
+    fontWeight: '600',
   },
   deviceList: {
     maxHeight: 400,
@@ -1184,45 +1576,24 @@ const styles = StyleSheet.create({
   fullScreenMapNonRiding: {
     ...StyleSheet.absoluteFillObject,
   },
-  floatingHeader: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 20,
-    right: 20,
-    zIndex: 10,
-  },
-  scanButtonFloating: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#2563eb',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#2563eb',
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    shadowOffset: {width: 0, height: 6},
-    elevation: 8,
-  },
   floatingButtonContainer: {
     position: 'absolute',
-    bottom: 100,
+    bottom: 48,
     left: 20,
     right: 20,
     zIndex: 10,
-    alignItems: 'center',
   },
   startRideButtonFloating: {
-    backgroundColor: '#2563eb',
-    paddingVertical: 24,
-    paddingHorizontal: 40,
-    borderRadius: 30,
+    paddingVertical: 20,
+    paddingHorizontal: 28,
+    borderRadius: 16,
     alignItems: 'center',
     shadowColor: '#2563eb',
-    shadowOpacity: 0.5,
-    shadowRadius: 20,
-    shadowOffset: {width: 0, height: 10},
-    elevation: 15,
-    minWidth: 280,
+    shadowOpacity: 0.45,
+    shadowRadius: 18,
+    shadowOffset: {width: 0, height: 8},
+    elevation: 12,
+    width: '100%',
   },
   scanningIndicatorFloating: {
     backgroundColor: 'rgba(255, 255, 255, 0.95)',
@@ -1240,82 +1611,134 @@ const styles = StyleSheet.create({
     color: '#2563eb',
     fontWeight: '600',
   },
-  cameraModal: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-    paddingTop: Platform.OS === 'ios' ? 60 : 40,
-    paddingHorizontal: 20,
-  },
-  cameraHeader: {
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 40,
+    zIndex: 9999,
   },
-  cameraTitle: {
-    fontSize: 28,
+  loadingContainer: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 30,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    shadowOffset: {width: 0, height: 10},
+    elevation: 10,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#334155',
+  },
+  summaryOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 99999,
+  },
+  summaryCard: {
+    width: '86%',
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 20,
+    alignItems: 'stretch',
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 12,
+  },
+  summaryTitle: {
+    fontSize: 20,
     fontWeight: '800',
     color: '#0f172a',
     marginBottom: 12,
     textAlign: 'center',
   },
-  cameraSubtitle: {
-    fontSize: 16,
-    color: '#64748b',
-    textAlign: 'center',
-    lineHeight: 24,
-  },
-  cameraActions: {
-    gap: 16,
-  },
-  takePictureButton: {
-    backgroundColor: '#2563eb',
-    paddingVertical: 24,
-    paddingHorizontal: 32,
-    borderRadius: 20,
-    alignItems: 'center',
+  summaryRow: {
     flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 12,
-    shadowColor: '#2563eb',
-    shadowOpacity: 0.3,
-    shadowRadius: 15,
-    shadowOffset: {width: 0, height: 8},
-    elevation: 8,
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eef2ff',
   },
-  takePictureIcon: {
-    fontSize: 32,
-  },
-  takePictureText: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  skipPhotoButton: {
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    borderRadius: 20,
-    alignItems: 'center',
-    backgroundColor: '#f1f5f9',
-  },
-  skipPhotoText: {
-    fontSize: 16,
-    fontWeight: '600',
+  summaryLabel: {
+    fontSize: 14,
     color: '#64748b',
+    fontWeight: '700',
   },
-  photoPreview: {
-    marginTop: 30,
+  summaryValue: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  summaryClose: {
+    marginTop: 18,
+    backgroundColor: '#2563eb',
+    paddingVertical: 12,
+    borderRadius: 10,
     alignItems: 'center',
   },
-  photoPreviewLabel: {
+  summaryCloseText: {
+    color: '#fff',
     fontSize: 16,
-    fontWeight: '600',
-    color: '#22c55e',
-    marginBottom: 12,
+    fontWeight: '700',
   },
-  photoImage: {
-    width: 300,
-    height: 225,
-    borderRadius: 16,
-    backgroundColor: '#e2e8f0',
+  turboNotification: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 92 : 70,
+    alignSelf: 'center',
+    paddingHorizontal: 22,
+    paddingVertical: 16,
+    borderRadius: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    backgroundColor: 'rgba(15, 23, 42, 0.94)',
+    shadowColor: '#0ea5e9',
+    shadowOpacity: 0.35,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 16,
+    zIndex: 99999,
+    overflow: 'hidden',
+  },
+  turboNotificationGlow: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(14, 165, 233, 0.16)',
+    opacity: 0.7,
+  },
+  turboNotificationBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(30, 64, 175, 0.42)',
+    borderWidth: 1,
+    borderColor: 'rgba(96, 165, 250, 0.65)',
+  },
+  turboNotificationBadgeText: {
+    fontSize: 24,
+  },
+  turboNotificationTitle: {
+    fontFamily: PRIMARY_FONT,
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+  },
+  turboNotificationSubtitle: {
+    fontFamily: PRIMARY_FONT,
+    color: 'rgba(226, 232, 240, 0.8)',
+    fontSize: 13,
+    marginTop: 2,
   },
 });
 

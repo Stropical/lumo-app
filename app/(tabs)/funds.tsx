@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, TextInput, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 
 interface Transaction {
   id: string;
@@ -95,7 +96,12 @@ export default function FundsScreen() {
         </View>
 
         {/* Balance Card */}
-        <View style={styles.balanceCard}>
+        <LinearGradient
+          colors={['#1e40af', '#2563eb', '#3b82f6']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.balanceCard}
+        >
           <Text style={styles.balanceLabel}>Available Balance</Text>
           <Text style={styles.balanceAmount}>${balance.toFixed(2)}</Text>
           <View style={styles.balanceInfo}>
@@ -115,7 +121,7 @@ export default function FundsScreen() {
           >
             <Text style={styles.addFundsButtonText}>+ Add Funds</Text>
           </TouchableOpacity>
-        </View>
+        </LinearGradient>
 
         {/* Estimated Ride Time */}
         <View style={styles.estimateCard}>
@@ -213,10 +219,6 @@ export default function FundsScreen() {
             </View>
 
             <TouchableOpacity
-              style={[
-                styles.confirmButton,
-                !addAmount && styles.confirmButtonDisabled
-              ]}
               onPress={() => {
                 const amount = parseFloat(addAmount);
                 if (amount && amount > 0) {
@@ -227,9 +229,16 @@ export default function FundsScreen() {
               }}
               disabled={!addAmount}
             >
-              <Text style={styles.confirmButtonText}>
-                Add {addAmount ? `$${parseFloat(addAmount).toFixed(2)}` : 'Funds'}
-              </Text>
+              <LinearGradient
+                colors={!addAmount ? ['#cbd5e1', '#cbd5e1'] : ['#1e40af', '#2563eb', '#3b82f6']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.confirmButton}
+              >
+                <Text style={styles.confirmButtonText}>
+                  Add {addAmount ? `$${parseFloat(addAmount).toFixed(2)}` : 'Funds'}
+                </Text>
+              </LinearGradient>
             </TouchableOpacity>
 
             <Text style={styles.modalFooter}>
@@ -264,7 +273,6 @@ const styles = StyleSheet.create({
     color: '#0f172a',
   },
   balanceCard: {
-    backgroundColor: '#2563eb',
     margin: 16,
     padding: 24,
     borderRadius: 20,
@@ -510,14 +518,10 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
   },
   confirmButton: {
-    backgroundColor: '#2563eb',
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
     marginBottom: 12,
-  },
-  confirmButtonDisabled: {
-    backgroundColor: '#cbd5e1',
   },
   confirmButtonText: {
     color: '#ffffff',
